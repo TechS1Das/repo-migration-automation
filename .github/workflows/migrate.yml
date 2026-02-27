@@ -1,0 +1,58 @@
+name: Dynamic Repo Migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_list:
+        description: 'Enter repos in format: SOURCE_URL,NEW_NAME (one per line)'
+        required: true
+        type: string
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure Git
+        run: |
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Process Repository List
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO_LIST: ${{ github.event.inputs.repo_list }}
+          TARGET_USER: ${{ github.repository_owner }}
+        run: |
+
+          echo "$REPO_LIST" | while IFS=',' read -r SOURCE_URL NEW_NAME
+          do
+            echo "======================================="
+            echo "Cloning from: $SOURCE_URL"
+            echo "New repo name: $NEW_NAME"
+
+            REPO_DIR=$(basename -s .git $SOURCE_URL)
+
+            # Clone full mirror
+            git clone --mirror $SOURCE_URL
+            cd $REPO_DIR.git
+
+            echo "Creating repository $NEW_NAME"
+
+            curl -s -X POST https://api.github.com/user/repos \
+              -H "Authorization: token $GH_PAT" \
+              -H "Accept: application/vnd.github+json" \
+              -d "{\"name\":\"$NEW_NAME\",\"private\":false}" \
+              > /dev/null
+
+            echo "Pushing to new repository..."
+
+            git push --mirror https://$GH_PAT@github.com/$TARGET_USER/$NEW_NAME.git
+
+            cd ..
+            rm -rf $REPO_DIR.git
+
+            echo "Completed $NEW_NAME"
+            echo "======================================="
+
+          done
