@@ -1,45 +1,75 @@
-- name: Process Repository List
-  env:
-    GH_PAT: ${{ secrets.GH_PAT }}
-    REPO_LIST: ${{ github.event.inputs.repo_list }}
-    TARGET_USER: ${{ github.repository_owner }}
-  run: |
+name: Dynamic Repo Migration
 
-    echo "$REPO_LIST" | while IFS=',' read -r SOURCE_URL NEW_NAME
-    do
-      echo "======================================="
-      echo "Cloning from: $SOURCE_URL"
-      echo "New repo name: $NEW_NAME"
+on:
+  workflow_dispatch:
+    inputs:
+      repo_list:
+        description: "Enter repos in format: SOURCE_URL,NEW_NAME (one per line)"
+        required: true
+        type: string
 
-      REPO_DIR=$(basename -s .git $SOURCE_URL)
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
 
-      # Clone as bare repo (safer than mirror in CI)
-      git clone --bare $SOURCE_URL
-      cd $REPO_DIR.git
+    steps:
+      - name: Setup Git
+        run: |
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"
 
-      echo "Creating repository $NEW_NAME"
+      - name: Migrate Repositories
+        shell: bash
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO_LIST: ${{ github.event.inputs.repo_list }}
+          TARGET_USER: ${{ github.repository_owner }}
+        run: |
 
-      curl -s -X POST https://api.github.com/user/repos \
-        -H "Authorization: token $GH_PAT" \
-        -H "Accept: application/vnd.github+json" \
-        -d "{\"name\":\"$NEW_NAME\",\"private\":false}" \
-        > /dev/null
+          set -e
 
-      echo "Setting new remote..."
+          echo "Starting migration..."
 
-      git remote remove origin
-      git remote add origin https://$GH_PAT@github.com/$TARGET_USER/$NEW_NAME.git
+          # Convert input to proper newline handling
+          echo "$REPO_LIST" > repos.txt
 
-      echo "Pushing branches..."
-      git push --all
+          while IFS=',' read -r SOURCE_URL NEW_NAME
+          do
+            echo "--------------------------------------"
+            echo "Source: $SOURCE_URL"
+            echo "New Repo: $NEW_NAME"
 
-      echo "Pushing tags..."
-      git push --tags
+            REPO_DIR=$(basename "$SOURCE_URL" .git)
 
-      cd ..
-      rm -rf $REPO_DIR.git
+            # Clone as bare repo
+            git clone --bare "$SOURCE_URL"
+            cd "$REPO_DIR.git"
 
-      echo "Completed $NEW_NAME"
-      echo "======================================="
+            echo "Creating new repository..."
 
-    done
+            curl -s -X POST \
+              -H "Authorization: token $GH_PAT" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/user/repos \
+              -d "{\"name\":\"$NEW_NAME\",\"private\":false}" \
+              > /dev/null
+
+            # Set new remote
+            git remote remove origin
+            git remote add origin "https://$GH_PAT@github.com/$TARGET_USER/$NEW_NAME.git"
+
+            echo "Pushing branches..."
+            git push --all
+
+            echo "Pushing tags..."
+            git push --tags
+
+            cd ..
+            rm -rf "$REPO_DIR.git"
+
+            echo "Completed $NEW_NAME"
+            echo "--------------------------------------"
+
+          done < repos.txt
+
+          echo "Migration completed."
